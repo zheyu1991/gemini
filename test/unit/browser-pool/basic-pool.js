@@ -183,7 +183,8 @@ describe('BasicPool', () => {
         it('should quit all browsers on cancel', () => {
             const pool = mkPool_();
 
-            return Promise.all([
+            return Promise
+                .all([
                     requestBrowser_(stubBrowser_('id1'), pool),
                     requestBrowser_(stubBrowser_('id2'), pool)
                 ])
@@ -198,7 +199,8 @@ describe('BasicPool', () => {
         it('should quit all browser with the same id on cancel', () => {
             const pool = mkPool_();
 
-            return Promise.all([
+            return Promise
+                .all([
                     requestBrowser_(stubBrowser_('id'), pool),
                     requestBrowser_(stubBrowser_('id'), pool)
                 ])
