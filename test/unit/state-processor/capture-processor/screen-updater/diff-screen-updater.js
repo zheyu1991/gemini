@@ -3,26 +3,27 @@
 const _ = require('lodash');
 const fs = require('fs-extra');
 const Promise = require('bluebird');
+const proxyquire = require('proxyquire');
 
 const Image = require('lib/image');
 const temp = require('lib/temp');
-const Updater = require('lib/state-processor/capture-processor/utils/updater');
-const Comparator = require('lib/state-processor/capture-processor/utils/comparator');
-const DiffScreenUpdater = require('lib/state-processor/capture-processor/screen-updater/diff-screen-updater');
 
 describe('diff-screen-updater', () => {
     const sandbox = sinon.sandbox.create();
 
     let imageStub;
-    let updater;
-    let comparator;
+    let utilsStub;
 
     const exec_ = (opts) => {
         opts = _.defaults(opts || {}, {
-            refPath: 'default/path'
+            refPath: '/default/path'
         });
 
         const capture = {image: imageStub};
+        const DiffScreenUpdater = proxyquire(
+            'lib/state-processor/capture-processor/screen-updater/diff-screen-updater',
+            {'../utils': utilsStub}
+        );
 
         return new DiffScreenUpdater().exec(capture, opts);
     };
@@ -34,16 +35,32 @@ describe('diff-screen-updater', () => {
         imageStub = sinon.createStubInstance(Image);
         imageStub.save.returns(Promise.resolve());
 
-        updater = {copy: sandbox.stub()};
-        sandbox.stub(Updater, 'create').returns(updater);
-
-        comparator = {compareImages: sandbox.stub()};
-        sandbox.stub(Comparator, 'create').returns(comparator);
+        utilsStub = {
+            compareImgs: sandbox.stub(),
+            copyImg: sandbox.stub()
+        };
     });
 
     afterEach(() => sandbox.restore());
 
-    it('should save image to the temp directory before comparing', () => {
+    it('should not save current image if reference image does not exist', () => {
+        fs.accessAsync.returns(Promise.reject());
+
+        return exec_({refPath: '/non-existent/path'})
+            .then((res) => {
+                assert.notCalled(imageStub.save);
+                assert.deepEqual(res, {
+                    imagePath: '/non-existent/path',
+                    updated: false
+                });
+            });
+    });
+
+    it('should save current image with "png" extension', () => {
+        return exec_().then(() => assert.calledWith(temp.path, {suffix: '.png'}));
+    });
+
+    it('should save current image to the temporary directory', () => {
         temp.path.returns('/temp/path');
 
         return exec_()
@@ -53,32 +70,36 @@ describe('diff-screen-updater', () => {
             });
     });
 
-    it('should not compare images if reference image does not exist', () => {
-        fs.accessAsync.returns(Promise.reject());
-
-        return exec_()
-            .then(() => assert.notCalled(comparator.compareImages));
+    it('should save current image before comparing with reference image', () => {
+        return exec_().then(() => assert.callOrder(imageStub.save, utilsStub.compareImgs));
     });
 
-    it('should not save image if images are the same', () => {
-        comparator.compareImages.returns(true);
+    it('should not copy current image to reference path if images are the same', () => {
+        utilsStub.compareImgs.returns(true);
 
         return exec_()
-            .then(() => assert.notCalled(updater.copy));
+            .then((res) => {
+                assert.notCalled(utilsStub.copyImg);
+                assert.propertyVal(res, 'updated', false);
+            });
     });
 
-    it('should save image if images are different', () => {
-        comparator.compareImages.returns(false);
+    it('should copy current image to reference path if images are different', () => {
+        utilsStub.compareImgs.returns(false);
+        utilsStub.copyImg.returns(true);
         temp.path.returns('/temp/path');
 
         return exec_({refPath: '/ref/path'})
-            .then(() => assert.calledWith(updater.copy, '/temp/path', '/ref/path'));
+            .then((res) => {
+                assert.calledWith(utilsStub.copyImg, '/temp/path', '/ref/path');
+                assert.propertyVal(res, 'updated', true);
+            });
     });
 
-    it('should save image with correct suffix', () => {
-        comparator.compareImages.returns(false);
+    it('should copy current image to reference path after comparing', () => {
+        utilsStub.compareImgs.returns(false);
 
         return exec_()
-            .then(() => assert.calledWith(temp.path, {suffix: '.png'}));
+            .then(() => assert.callOrder(utilsStub.compareImgs, utilsStub.copyImg));
     });
 });

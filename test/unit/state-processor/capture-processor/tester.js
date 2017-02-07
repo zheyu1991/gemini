@@ -1,11 +1,15 @@
 'use strict';
 
+const _ = require('lodash');
+const fs = require('fs-extra');
 const Promise = require('bluebird');
+const proxyquire = require('proxyquire');
+
 const temp = require('lib/temp');
 const Image = require('lib/image');
-const RefChecker = require('lib/state-processor/capture-processor/utils/reference-checker');
-const Comparator = require('lib/state-processor/capture-processor/utils/comparator');
 const Tester = require('lib/state-processor/capture-processor/tester');
+const NoRefImageError = require('lib/errors/no-ref-image-error');
+const utils = require('lib/state-processor/capture-processor/utils');
 
 describe('state-processor/capture-processor/tester', () => {
     const sandbox = sinon.sandbox.create();
@@ -17,49 +21,75 @@ describe('state-processor/capture-processor/tester', () => {
     });
 
     describe('exec', () => {
-        let capture;
-        let tester;
-        let refChecker;
-        let comparator;
         let imageStub;
+        let utilsStub;
+
+        const exec_ = (opts) => {
+            opts = _.defaults(opts || {}, {
+                refPath: '/default/path'
+            });
+
+            const capture = {
+                canHaveCaret: true,
+                image: imageStub
+            };
+            const TesterStub = proxyquire('lib/state-processor/capture-processor/tester', {
+                './utils': utilsStub
+            });
+
+            return new TesterStub().exec(capture, opts);
+        };
 
         beforeEach(() => {
-            sandbox.stub(temp, 'path').returns('tmp/path');
-
-            refChecker = {hasAccessTo: sandbox.stub()};
-            refChecker.hasAccessTo.returns(Promise.resolve);
-            sandbox.stub(RefChecker, 'create').returns(refChecker);
-
-            comparator = {compareImages: sandbox.stub()};
-            comparator.compareImages.returns(true);
-            sandbox.stub(Comparator, 'create').returns(comparator);
+            sandbox.stub(fs, 'accessAsync').returns(Promise.resolve());
+            sandbox.stub(temp, 'path');
 
             imageStub = sinon.createStubInstance(Image);
             imageStub.save.returns(Promise.resolve());
 
-            capture = {
-                canHaveCaret: true,
-                image: imageStub
+            utilsStub = {
+                existsRef: sandbox.stub(),
+                compareImgs: sandbox.stub()
             };
-
-            tester = Tester.create('#diff');
         });
 
-        it('should save image into temporary folder', () => {
-            return tester.exec(capture, {})
-                .then(() => assert.calledWith(imageStub.save, 'tmp/path'));
+        it('should save current image with "png" extension', () => {
+            return exec_().then(() => assert.calledWith(temp.path, {suffix: '.png'}));
+        });
+
+        it('should save current image to the temporary directory', () => {
+            temp.path.returns('/temp/path');
+
+            return exec_()
+                .then(() => {
+                    assert.calledOnce(imageStub.save);
+                    assert.calledWith(imageStub.save, '/temp/path');
+                });
+        });
+
+        it('should save current image before checking that reference image exists', () => {
+            return exec_().then(() => assert.callOrder(imageStub.save, utilsStub.existsRef));
+        });
+
+        it('should be rejected with `NoRefImageError` if reference image does not exist', () => {
+            fs.accessAsync.returns(Promise.reject());
+            utilsStub.existsRef = utils.existsRef;
+
+            return assert.isRejected(exec_({refPath: '/non-existent/path'}), NoRefImageError);
         });
 
         it('should compare images with given set of parameters', () => {
+            temp.path.returns('/temp/path');
+
             const options = {
-                refPath: 'some/ref/path',
+                refPath: '/ref/path',
                 pixelRatio: 99,
                 tolerance: 23
             };
 
-            return tester.exec(capture, options)
+            return exec_(options)
                 .then(() => {
-                    assert.calledWith(comparator.compareImages, 'tmp/path', 'some/ref/path', {
+                    assert.calledWith(utilsStub.compareImgs, '/temp/path', '/ref/path', {
                         canHaveCaret: true,
                         pixelRatio: 99,
                         tolerance: 23
@@ -67,12 +97,22 @@ describe('state-processor/capture-processor/tester', () => {
                 });
         });
 
+        it('should compare images after checking that reference image exists', () => {
+            utilsStub.existsRef.returns(Promise.resolve());
+
+            return exec_().then(() => assert.callOrder(utilsStub.existsRef, utilsStub.compareImgs));
+        });
+
         it('should return image comparison result', () => {
-            return tester.exec(capture, {refPath: 'some/ref/path'})
+            utilsStub.existsRef.returns(Promise.resolve());
+            utilsStub.compareImgs.returns(true);
+            temp.path.returns('/temp/path');
+
+            return exec_({refPath: '/ref/path'})
                 .then((result) => {
                     assert.deepEqual(result, {
-                        currentPath: 'tmp/path',
-                        referencePath: 'some/ref/path',
+                        currentPath: '/temp/path',
+                        referencePath: '/ref/path',
                         equal: true
                     });
                 });
